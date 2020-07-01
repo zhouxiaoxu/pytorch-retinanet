@@ -1,6 +1,6 @@
 import argparse
 import collections
-
+import os
 import numpy as np
 
 import torch
@@ -18,7 +18,7 @@ from retinanet import csv_eval
 assert torch.__version__.split('.')[0] == '1'
 
 print('CUDA available: {}'.format(torch.cuda.is_available()))
-
+#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
@@ -30,7 +30,9 @@ def main(args=None):
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
-    parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
+    parser.add_argument('--epochs', help='Number of epochs', type=int, default=200)
+    parser.add_argument('--pt_to_loader', help='continue train with model')   
+    parser.add_argument('--pt_to_save', help='save model path')   
 
     parser = parser.parse_args(args)
 
@@ -67,28 +69,36 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     sampler = AspectRatioBasedSampler(dataset_train, batch_size=2, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=3, collate_fn=collater, batch_sampler=sampler)
+    #sampler = AspectRatioBasedSampler(dataset_train, batch_size=32, drop_last=False)
+    dataloader_train = DataLoader(dataset_train, num_workers=2, collate_fn=collater, batch_sampler=sampler)
 
     if dataset_val is not None:
         sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-        dataloader_val = DataLoader(dataset_val, num_workers=3, collate_fn=collater, batch_sampler=sampler_val)
+        #sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=12, drop_last=False)
+        dataloader_val = DataLoader(dataset_val, num_workers=2, collate_fn=collater, batch_sampler=sampler_val)
 
     # Create the model
-    if parser.depth == 18:
-        retinanet = model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 34:
-        retinanet = model.resnet34(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 50:
-        retinanet = model.resnet50(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 101:
-        retinanet = model.resnet101(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 152:
-        retinanet = model.resnet152(num_classes=dataset_train.num_classes(), pretrained=True)
+    # 创建模型,pt_to_loader继续训练，否则重新训练
+    if parser.pt_to_loader:
+        print("continue train model with model {}".format(parser.pt_to_loader))
+        retinanet = torch.load(parser.pt_to_loader)
     else:
-        raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
+        if parser.depth == 18:
+            retinanet = model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True)
+        elif parser.depth == 34:
+            retinanet = model.resnet34(num_classes=dataset_train.num_classes(), pretrained=True)
+        elif parser.depth == 50:
+            retinanet = model.resnet50(num_classes=dataset_train.num_classes(), pretrained=True)
+        elif parser.depth == 101:
+            retinanet = model.resnet101(num_classes=dataset_train.num_classes(), pretrained=True)
+        elif parser.depth == 152:
+            retinanet = model.resnet152(num_classes=dataset_train.num_classes(), pretrained=True)
+        else:
+            raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
 
     use_gpu = True
 
+    # 设定使用gpu训练
     if use_gpu:
         if torch.cuda.is_available():
             retinanet = retinanet.cuda()
@@ -100,6 +110,7 @@ def main(args=None):
 
     retinanet.training = True
 
+    #optimizer = optim.Adam(retinanet.parameters(), lr=1e-5)
     optimizer = optim.Adam(retinanet.parameters(), lr=1e-5)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
@@ -117,6 +128,7 @@ def main(args=None):
         retinanet.module.freeze_bn()
 
         epoch_loss = []
+        print('learnint rate:', optimizer.param_groups[0]['lr'])
 
         for iter_num, data in enumerate(dataloader_train):
             try:
@@ -144,10 +156,10 @@ def main(args=None):
                 loss_hist.append(float(loss))
 
                 epoch_loss.append(float(loss))
-
-                print(
-                    'Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
-                        epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
+                if (iter_num+1)%50 == 0:
+                    print(
+                        'Epoch: {} | Iteration: {} | LR: {}| Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
+                            epoch_num+1, iter_num+1, optimizer.param_groups[0]['lr'], float(classification_loss), float(regression_loss), np.mean(loss_hist)))
 
                 del classification_loss
                 del regression_loss
@@ -168,8 +180,8 @@ def main(args=None):
             mAP = csv_eval.evaluate(dataset_val, retinanet)
 
         scheduler.step(np.mean(epoch_loss))
-
-        torch.save(retinanet.module, '{}_retinanet_{}.pt'.format(parser.dataset, epoch_num))
+        if (epoch_num+1) % 5 == 0:
+            torch.save(retinanet.module, os.path.join(parser.pt_to_save,'{}_retinanet_{}.pt'.format(parser.dataset, epoch_num+1)))
 
     retinanet.eval()
 
@@ -177,4 +189,6 @@ def main(args=None):
 
 
 if __name__ == '__main__':
+    #s.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    #torch.cuda.set_device(0)
     main()

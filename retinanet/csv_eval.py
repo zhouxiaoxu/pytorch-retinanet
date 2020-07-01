@@ -87,9 +87,9 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
 
             # run network
             if torch.cuda.is_available():
-                scores, labels, boxes = retinanet(data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0))
+                scores, labels, boxes = retinanet(data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0))[0]
             else:
-                scores, labels, boxes = retinanet(data['img'].permute(2, 0, 1).float().unsqueeze(dim=0))
+                scores, labels, boxes = retinanet(data['img'].permute(2, 0, 1).float().unsqueeze(dim=0))[0]
             scores = scores.cpu().numpy()
             labels = labels.cpu().numpy()
             boxes  = boxes.cpu().numpy()
@@ -120,7 +120,7 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
                 for label in range(dataset.num_classes()):
                     all_detections[index][label] = np.zeros((0, 5))
 
-            print('{}/{}'.format(index + 1, len(dataset)), end='\r')
+            #print('{}/{}'.format(index + 1, len(dataset)), end='\r')
 
     return all_detections
 
@@ -144,7 +144,7 @@ def _get_annotations(generator):
         for label in range(generator.num_classes()):
             all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
 
-        print('{}/{}'.format(i + 1, len(generator)), end='\r')
+        #print('{}/{}'.format(i + 1, len(generator)), end='\r')
 
     return all_annotations
 

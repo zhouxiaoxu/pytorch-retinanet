@@ -142,7 +142,7 @@ class CSVDataset(Dataset):
             with self._open_for_csv(self.class_list) as file:
                 self.classes = self.load_classes(csv.reader(file, delimiter=','))
         except ValueError as e:
-            raise(ValueError('invalid CSV class file: {}: {}'.format(self.class_list, e)))
+            raise_from(ValueError('invalid CSV class file: {}: {}'.format(self.class_list, e)), None)
 
         self.labels = {}
         for key, value in self.classes.items():
@@ -153,7 +153,7 @@ class CSVDataset(Dataset):
             with self._open_for_csv(self.train_file) as file:
                 self.image_data = self._read_annotations(csv.reader(file, delimiter=','), self.classes)
         except ValueError as e:
-            raise(ValueError('invalid CSV annotations file: {}: {}'.format(self.train_file, e)))
+            raise_from(ValueError('invalid CSV annotations file: {}: {}'.format(self.train_file, e)), None)
         self.image_names = list(self.image_data.keys())
 
     def _parse(self, value, function, fmt):
@@ -179,6 +179,7 @@ class CSVDataset(Dataset):
         else:
             return open(path, 'r', newline='')
 
+
     def load_classes(self, csv_reader):
         result = {}
 
@@ -196,6 +197,7 @@ class CSVDataset(Dataset):
             result[class_name] = class_id
         return result
 
+
     def __len__(self):
         return len(self.image_names)
 
@@ -203,7 +205,7 @@ class CSVDataset(Dataset):
 
         img = self.load_image(idx)
         annot = self.load_annotations(idx)
-        sample = {'img': img, 'annot': annot}
+        sample = {'img': img, 'annot': annot, 'image_path': self.image_names[idx]}
         if self.transform:
             sample = self.transform(sample)
 
@@ -250,6 +252,9 @@ class CSVDataset(Dataset):
         return annotations
 
     def _read_annotations(self, csv_reader, classes):
+        '''
+            读取训练训练文件的bbox信息，返回一个字典 dict[imag_name] = {[annotaion1, annotation2,....], ....}
+        '''
         result = {}
         for line, row in enumerate(csv_reader):
             line += 1
@@ -263,6 +268,7 @@ class CSVDataset(Dataset):
                 result[img_file] = []
 
             # If a row contains only an image path, it's an image without annotations.
+            # 只包含图片路径时，该图片没有标注信息
             if (x1, y1, x2, y2, class_name) == ('', '', '', '', ''):
                 continue
 
@@ -299,12 +305,18 @@ class CSVDataset(Dataset):
 
 
 def collater(data):
+    '''
+        collater 将多个训练图片的数据，组成一个batch
+        参数：
+            data：一个list， [{'img': value, 'annot':value, 'scale': value, 'image_path': value},]
 
+    '''
     imgs = [s['img'] for s in data]
     annots = [s['annot'] for s in data]
     scales = [s['scale'] for s in data]
+    image_paths = [s['image_path'] for s in data]
         
-    widths = [int(s.shape[0]) for s in imgs]
+    widths = [int(s.shape[0]) for s in imgs]    # PIL读取的图片，shape[0]是width
     heights = [int(s.shape[1]) for s in imgs]
     batch_size = len(imgs)
 
@@ -315,9 +327,10 @@ def collater(data):
 
     for i in range(batch_size):
         img = imgs[i]
-        padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+        padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img #按照当前batch中所有图片最大宽度和最大高度，进行padding
+        #print("*******Collater Funtion： imgs {}, origin shape: {},   padding shape: {} ".format(image_paths[i], img.shape, padded_imgs.shape))
 
-    max_num_annots = max(annot.shape[0] for annot in annots)
+    max_num_annots = max(annot.shape[0] for annot in annots)    # annots的维度是[batch_size, 单个图片annots数量，长度为5的annots]   这里就取得该batch中单张图片标注框最多的框数量
     
     if max_num_annots > 0:
 
@@ -332,15 +345,18 @@ def collater(data):
         annot_padded = torch.ones((len(annots), 1, 5)) * -1
 
 
-    padded_imgs = padded_imgs.permute(0, 3, 1, 2)
+    padded_imgs = padded_imgs.permute(0, 3, 1, 2)   # 维度转换
 
-    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
+    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales, 'image_path':image_paths}
 
 class Resizer(object):
     """Convert ndarrays in sample to Tensors."""
+    '''
+        Resizer函数，按照短边进行缩放到608的尺寸
+    '''
 
     def __call__(self, sample, min_side=608, max_side=1024):
-        image, annots = sample['img'], sample['annot']
+        image, annots,image_path = sample['img'], sample['annot'],sample['image_path']
 
         rows, cols, cns = image.shape
 
@@ -359,16 +375,16 @@ class Resizer(object):
         # resize the image with the computed scale
         image = skimage.transform.resize(image, (int(round(rows*scale)), int(round((cols*scale)))))
         rows, cols, cns = image.shape
-
-        pad_w = 32 - rows%32
-        pad_h = 32 - cols%32
-
+        
+        pad_w = 32 - rows%32        # 求余，将图片补齐成640
+        pad_h = 32 - cols%32        
+        
         new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
         new_image[:rows, :cols, :] = image.astype(np.float32)
-
+        #print("*******Resizer Function：  imgs {}, origin shape: {}, After collater padding, shape: {} ".format(image_path, image.shape, new_image.shape))
         annots[:, :4] *= scale
 
-        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
+        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale, 'image_path':image_path}
 
 
 class Augmenter(object):
@@ -377,7 +393,7 @@ class Augmenter(object):
     def __call__(self, sample, flip_x=0.5):
 
         if np.random.rand() < flip_x:
-            image, annots = sample['img'], sample['annot']
+            image, annots, image_path = sample['img'], sample['annot'],sample['image_path']
             image = image[:, ::-1, :]
 
             rows, cols, channels = image.shape
@@ -390,7 +406,7 @@ class Augmenter(object):
             annots[:, 0] = cols - x2
             annots[:, 2] = cols - x_tmp
 
-            sample = {'img': image, 'annot': annots}
+            sample = {'img': image, 'annot': annots, 'image_path':image_path}
 
         return sample
 
@@ -403,9 +419,9 @@ class Normalizer(object):
 
     def __call__(self, sample):
 
-        image, annots = sample['img'], sample['annot']
+        image, annots, image_path = sample['img'], sample['annot'], sample['image_path']
 
-        return {'img':((image.astype(np.float32)-self.mean)/self.std), 'annot': annots}
+        return {'img':((image.astype(np.float32)-self.mean)/self.std), 'annot': annots, 'image_path':image_path}
 
 class UnNormalizer(object):
     def __init__(self, mean=None, std=None):
@@ -433,12 +449,18 @@ class UnNormalizer(object):
 class AspectRatioBasedSampler(Sampler):
 
     def __init__(self, data_source, batch_size, drop_last):
+        '''
+            sampler对象会对数据集按照长宽比分组，每个组的长度是一个batch
+        '''
         self.data_source = data_source
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.groups = self.group_images()
 
     def __iter__(self):
+        '''
+            每个epoch开始运行后，都会对group进行shuffle，然后在依次选择
+        '''
         random.shuffle(self.groups)
         for group in self.groups:
             yield group
@@ -451,8 +473,10 @@ class AspectRatioBasedSampler(Sampler):
 
     def group_images(self):
         # determine the order of the images
+        # 根据图片宽高比的升序排列order
         order = list(range(len(self.data_source)))
-        order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))
+        order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))    # order表示dataset数据元素的index，这里按照图片的长宽比对order进行排序
 
         # divide into groups, one group = one batch
+        # 将图片分组，每个组都是一个batch，x % len(order)表示如果剩余不够一个batch时，从头去一部分补齐一个batch
         return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in range(0, len(order), self.batch_size)]

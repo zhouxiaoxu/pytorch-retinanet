@@ -10,16 +10,19 @@ def conv3x3(in_planes, out_planes, stride=1):
 
 
 class BasicBlock(nn.Module):
+    '''
+        BasicBlock: ResNet18 和ResNet34使用net block。注意每个block都会有存在一个shotcut,实现输入和输出的连接 h'(x) = h(x) + x
+    '''
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None):    # conv3x3 -> BN -> Relu-> conv3x3-> BN
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = nn.BatchNorm2d(planes)
-        self.downsample = downsample
+        self.downsample = downsample    # 先进行downsample后
         self.stride = stride
 
     def forward(self, x):
@@ -32,11 +35,11 @@ class BasicBlock(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        if self.downsample is not None:
-            residual = self.downsample(x)
+        if self.downsample is not None: # 如果out和x的形状不同，则需要对输入进行下采样，否则执行 out +
+            residual = self.downsample(x)   
 
-        out += residual
-        out = self.relu(out)
+        out += residual  # 下采样和卷积输入出融合
+        out = self.relu(out)    # 激活非线性处理
 
         return out
 
